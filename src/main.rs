@@ -76,6 +76,7 @@ struct Inode {
     file_size: u32,
     num_blocks: u32,
     i_block: String,
+    i_blocks: Vec<u32>
 }
 
 struct Dirent {
@@ -88,10 +89,8 @@ struct Dirent {
 }
 
 impl Inode {
-    fn new(inode_num: u32, block: &Vec<u8>) -> Inode {
-	//eprintln!("0 {} 1 {}", block[0], block[1]);
+    fn new(inode_num: u32, block: &[u8]) -> Option<Inode> {
         let i_mode = two_to_u16(&block[0..2]).unwrap();
-        //eprintln!("inode_num {} i_mode {}", inode_num, i_mode);
 	let n = if i_mode & 0xA000 == 0xA000 {
             's'
         } else if i_mode & 0x8000 == 0x8000 {
@@ -103,49 +102,46 @@ impl Inode {
         };
         let file_size = four_to_u32(&block[4..8]).unwrap();
         let mut blks = String::new();
-	if n == 's' {
-		eprintln!("{} {} {}", n, file_size, ((n == 's') && (file_size > 60)));
-        }
+	let mut i_blocks = Vec::<u32>::new();
 	if (n == 'f') || (n == 'd') || ((n == 's') && (file_size > 60)) {
-            let i_blocks = &block[40..100];
-            //let mut it = 0;
+            let ibytes = &block[40..100];
             blks.push_str(&String::from(","));
-            for chunk in i_blocks.chunks(4) {
-                /*if it < 2 {
-                println!("{} {:#?}", inode_num, chunk);
-                }*/
-                let a_u32 = four_to_u32(&chunk);
-                /*if it < 2 {
-                    println!("{} {:#?}", inode_num, a_u32);
-                }*/
-                let a_u32 = a_u32.unwrap();
+            for i in (0..60).step_by(4) {
+		let a_u32 = four_to_u32(&ibytes[i..(i+4)]).unwrap();
                 if a_u32 as usize > 1000 {
                     break;
                 }
                 blks.push_str(&a_u32.to_string());
+		i_blocks.push(a_u32);
                 blks.push_str(&String::from(","));
-                // it += 1;
             }
             if blks.len() > 1 {
                 blks = String::from(&blks[1..(blks.len() - 1)]);
             }
-            //println!("{} {}", inode_num, blks);
         }
-        Inode {
-            inode_number: inode_num,
-            file_type: n,
-            mode: i_mode & 0xFFF,
-            owner: two_to_u16(&block[2..4]).unwrap(),
-            group: two_to_u16(&block[24..26]).unwrap(),
-            link_count: two_to_u16(&block[26..28]).unwrap(),
-            last_change: secs_to_timestr(four_to_u32(&block[16..20]).unwrap()),
-            mod_time: secs_to_timestr(four_to_u32(&block[16..20]).unwrap()),
-            last_access: secs_to_timestr(four_to_u32(&block[8..12]).unwrap()),
-            file_size: file_size,
-            num_blocks: four_to_u32(&block[28..32]).unwrap(),
-            i_block: blks,
-        }
-    }
+	if n == 's' {
+		blks = String::from("");
+	}
+	if (blks.len() == 0) && (n != 's') {
+		None
+	} else {
+            Some(Inode {
+            	inode_number: inode_num,
+            	file_type: n,
+            	mode: i_mode & 0xFFF,
+            	owner: two_to_u16(&block[2..4]).unwrap(),
+            	group: two_to_u16(&block[24..26]).unwrap(),
+            	link_count: two_to_u16(&block[26..28]).unwrap(),
+            	last_change: secs_to_timestr(four_to_u32(&block[16..20]).unwrap()),
+            	mod_time: secs_to_timestr(four_to_u32(&block[16..20]).unwrap()),
+            	last_access: secs_to_timestr(four_to_u32(&block[8..12]).unwrap()),
+            	file_size: file_size,
+            	num_blocks: four_to_u32(&block[28..32]).unwrap(),
+            	i_block: blks,
+	    	i_blocks: i_blocks,
+		})
+    	}
+   }
 }
 
 impl fmt::Display for Inode {
@@ -170,7 +166,7 @@ impl fmt::Display for Inode {
 }
 
 impl Superblock {
-    fn new(block: &Vec<u8>) -> Superblock {
+    fn new(block: &[u8]) -> Superblock {
         Superblock {
             s_blocks_count: four_to_u32(&block[4..8]).unwrap(),
             s_inodes_count: four_to_u32(&block[0..4]).unwrap(),
@@ -200,7 +196,7 @@ impl fmt::Display for Superblock {
 }
 
 impl Group {
-    fn new(block_count: u32, inode_count: u32, block: &Vec<u8>) -> Option<Group> {
+    fn new(block_count: u32, inode_count: u32, block: &[u8]) -> Option<Group> {
         if block.len() < 16 {
             None
         } else {
@@ -234,7 +230,7 @@ impl fmt::Display for Group {
 }
 
 impl Dirent {
-    fn new(parent_num: u32, logical_offset: u32, block: &Vec<u8>) -> Dirent {
+    fn new(parent_num: u32, logical_offset: u32, block: &[u8]) -> Dirent {
         let name_len = block[6];
         let name: String = block[8..(8 + (name_len as usize))]
             .to_vec()
@@ -265,6 +261,15 @@ impl fmt::Display for Dirent {
             self.name,
         )
     }
+}
+
+fn print_dentry(inode_num: u32, block_num: u32, data: &[u8]) {
+	let len_offset = 4;
+	let start = 1024*block_num;
+	let mut ptr = start;
+	while ptr <  1024*(block_num+1) {
+
+	}
 }
 
 fn four_to_u32(byte_slice: &[u8]) -> Option<u32> {
@@ -338,84 +343,85 @@ fn extract<'a>(input_name: &'a str) -> Result<(), &'static str> {
     };
     // superblock at offset 1024 from the beginning of the file
     // does .get() get raw bytes? need to convert them to u32
-    let mut superblock = Vec::<u8>::new();
-    let mut block_desc_table = Vec::<u8>::new();
     let mut block_size: usize = 0;
     let mut blocks_per_group = 0;
     let mut inodes_per_group = 0;
     // parsing superblock
-    for (n, i) in memmapd.iter().enumerate() {
-        if (n >= 1024) && (n < (1024 + 4 + 88)) {
-            superblock.push(*i);
-        } else if n == (1024 + 4 + 88) {
-            let block = Superblock::new(&superblock);
-            println!("{}", block);
-            block_size = block.s_log_block_size as usize;
-            blocks_per_group = block.s_blocks_count;
-            inodes_per_group = block.s_inodes_count;
-        // assuming next block after containing superblock is block descriptor table
-        } else if n > (1024 + 4 + 88) {
-            break;
-        }
-    }
+    let block = Superblock::new(&memmapd.get(1024..(1024 + 4 + 88)).unwrap());
+    println!("{}", block);
+    block_size = block.s_log_block_size as usize;
+    blocks_per_group = block.s_blocks_count;
+    inodes_per_group = block.s_inodes_count;
     // assumes group number is 1
-    // parsing block group descriptor table
-    for (n, i) in memmapd.iter().enumerate() {
-        if (n >= (1024 + block_size)) && (n < (1024 + 2 * block_size)) {
-            block_desc_table.push(*i);
-        } else if n == (1024 + 2 * block_size) {
-            let group = Group::new(blocks_per_group, inodes_per_group, &block_desc_table);
-            match group {
+    let group = Group::new(blocks_per_group, inodes_per_group, 
+		 &memmapd
+			.get((1024 + block_size)..(1024 + 2 * block_size))
+			.unwrap());
+    match group {
                 Some(g) => {
                     println!("{}", g);
                 }
                 None => {
                     eprintln!("Unable to parse block descriptor table");
                 }
-            }
-        }
-    }
+     }
+     let block_bitmap = memmapd 
+			.get((2048 + block_size)..(2048 + block_size * 2))
+			.unwrap();
+	
     let mut index = 1;
-    let mut inode_index = 1;
-    let mut inode_num = 0;
-    let mut inode_table = Vec::<u8>::new();
-    // parse block bitmap and inode bitmap to find
-    // free blocks and free inode
-    for (n, i) in memmapd.iter().enumerate() {
-        if (n >= (2048 + block_size)) && (n < (2048 + block_size * 2)) {
-            for x in 0..8 {
-                if !get_bit_at(*i, x) {
+    for x in 0..block_size {
+	for i in 0..8 {
+                if !get_bit_at(block_bitmap[x], i) {
                     println!("BFREE,{}", index);
                 }
                 index += 1;
-            }
-        } else if (n >= (2048 + block_size * 2)) && (n < (2048 + block_size * 3)) {
-            for x in 0..8 {
-                if !get_bit_at(*i, x) {
-                    println!("IFREE,{}", inode_index);
-                }
-                inode_index += 1;
-            }
-        } else if (n >= (2048 + block_size * 3)) && (n < (2048 + block_size * (3 + 28))) {
-            if (inode_table.len() > 0)
-                && (inode_table.len() % 128 == 0)
-                && (inode_num <= inodes_per_group)
-            {
-                inode_num += 1;
-                let inode = Inode::new(inode_num as u32, &inode_table);
-                if inode.file_type != '?' {
-                    println!("{}", inode);
-		    if inode.file_type == 'd' {
-                    	print_dirent(inode_num as u32, &memmapd);
-		    }
-		    /*if inode_num == 12 {
-			 print_dirent(inode_num as u32, 56, &memmapd); 
-		    }*/
-                }
-                inode_table.clear();
-            }
-            inode_table.push(*i);
         }
+     }
+     index = 1;
+     let inode_bitmap = memmapd
+			 .get((2048 + block_size * 2)..(2048 + block_size * 3))
+			.unwrap();
+     for x in 0..block_size {
+	for i in 0..8 {
+                if !get_bit_at(inode_bitmap[x], i) {
+                    println!("IFREE,{}", index);
+                }
+                index += 1;
+        }
+     }
+    index = 1;
+    /*let slice = memmapd
+			.get((2048 + block_size*3)..(2048 + block_size*(3+28)))
+			.unwrap();*/
+    let mut inode_num = 0;
+    for n in ((2048 + block_size * 3)..(2048 + block_size*(3+28)))
+	.step_by(128) {
+		if(n % 128 == 0 && inode_num <= inodes_per_group) {
+			let inode_table = &memmapd
+						.get(n..(n + 128))
+						.unwrap();
+			inode_num += 1;
+			let inode = Inode::new(inode_num, inode_table);
+			match inode {
+				Some(ino) => {
+					println!("{}", ino);
+					if ino.file_type == 'd' {
+						for k in 0..12 {
+						     if ino.i_blocks.len() > 0 {
+						     }
+						 }
+					} else if ino.file_type == 'f' {
+						let base = [0, 256, 256*256+256];
+						for k in 12..15 {
+							if ino.i_blocks.len() > 0 {
+							}
+						}
+					}
+				},
+				None => {},
+			}
+	    }
     }
     Ok(())
 }
